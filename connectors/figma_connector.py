@@ -3,15 +3,35 @@ Figma Connector - extracts full wireframe context from Figma designs
 Handles frames, components, text labels, annotations, flow descriptions
 """
 import re
+import json
+import hashlib
+from pathlib import Path
 import requests
 from typing import Optional
 
 
 class FigmaConnector:
     BASE_URL = "https://api.figma.com/v1"
+    _CACHE_DIR = Path(".figma_cache")
 
     def __init__(self, access_token: str):
         self.headers = {"X-Figma-Token": access_token}
+
+    def _cache_path(self, file_key: str, node_id: Optional[str]) -> Path:
+        key = f"{file_key}:{node_id or 'full'}"
+        h = hashlib.md5(key.encode()).hexdigest()[:12]
+        self._CACHE_DIR.mkdir(exist_ok=True)
+        return self._CACHE_DIR / f"{h}.json"
+
+    def _load_cache(self, file_key: str, node_id: Optional[str]) -> Optional[dict]:
+        p = self._cache_path(file_key, node_id)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+        return None
+
+    def _save_cache(self, file_key: str, node_id: Optional[str], data: dict) -> None:
+        p = self._cache_path(file_key, node_id)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ─── URL Parsing ──────────────────────────────────────────────────────────
 
@@ -46,6 +66,10 @@ class FigmaConnector:
         resp.raise_for_status()
         return resp.json()
 
+    def _get_file_meta(self, file_key: str) -> dict:
+        """Lightweight fetch — only top-level metadata (name, lastModified). Much faster."""
+        return self._get_file(file_key, depth=1)
+
     def _get_nodes(self, file_key: str, node_ids: list[str]) -> dict:
         url = f"{self.BASE_URL}/files/{file_key}/nodes"
         resp = requests.get(url, headers=self.headers, params={"ids": ",".join(node_ids)})
@@ -72,25 +96,31 @@ class FigmaConnector:
         """
         file_key, node_id = self.parse_url(figma_url)
 
-        file_data = self._get_file(file_key, depth=3)
-        file_name = file_data.get("name", "Unknown")
-        last_modified = file_data.get("lastModified", "Unknown")
-        document = file_data.get("document", {})
+        cached = self._load_cache(file_key, node_id)
+        if cached:
+            return cached
 
         comments = self._get_comments(file_key)
 
         if node_id:
-            # Specific frame/component requested
+            # Specific frame requested — only fetch lightweight metadata + the node itself
+            meta = self._get_file_meta(file_key)
+            file_name = meta.get("name", "Unknown")
+            last_modified = meta.get("lastModified", "Unknown")
             nodes_data = self._get_nodes(file_key, [node_id])
             node_doc = nodes_data.get("nodes", {}).get(node_id, {}).get("document", {})
             screens = [node_doc] if node_doc else []
             target_name = node_doc.get("name", "Unknown")
         else:
-            # Extract all top-level frames from every page
+            # Full file needed — fetch at depth=3 to get all frames
+            file_data = self._get_file(file_key, depth=3)
+            file_name = file_data.get("name", "Unknown")
+            last_modified = file_data.get("lastModified", "Unknown")
+            document = file_data.get("document", {})
             screens = self._collect_all_frames(document)
             target_name = "Full File"
 
-        return {
+        result = {
             "file_name": file_name,
             "last_modified": last_modified,
             "file_key": file_key,
@@ -99,6 +129,8 @@ class FigmaConnector:
             "screens": [self._parse_screen(s) for s in screens],
             "comments": self._parse_comments(comments),
         }
+        self._save_cache(file_key, node_id, result)
+        return result
 
     # ─── Frame / Screen Extraction ────────────────────────────────────────────
 

@@ -179,7 +179,7 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.3, "num_predict": 2048},
+            options={"temperature": 0.3, "num_predict": 1500},
         )
         data = json.loads(response.message.content)
         data["structured_stories"] = [
