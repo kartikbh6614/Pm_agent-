@@ -1,23 +1,24 @@
 """
 PM Agent — CLI tool
 
-Usage (auto problem-statement selection):
-    python pm_agent.py --figma <url>
+Usage:
+    python pm_agent.py
 
-Usage (manual goal):
-    python pm_agent.py --figma <url> --goal "Add mobile checkout flow"
+The tool will prompt for your Figma URL interactively.
 
 Options:
-    --model qwen2.5:14b     use a bigger model
-    --out   ./docs/prds     custom output folder
-    --no-open               skip auto-opening HTML in browser
+    --goal "text"       skip problem selection, use this goal directly
+    --model qwen2.5:14b use a bigger model
+    --out   ./docs/prds custom output folder
+    --fast              auto-detect goal, skip selection
+    --no-open           skip auto-opening HTML in browser
 """
 import os
 import sys
 import argparse
 import webbrowser
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -37,17 +38,15 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python pm_agent.py --figma "https://figma.com/design/abc/App?node-id=1-2"
-  python pm_agent.py --figma <url> --goal "Add mobile checkout" --model qwen2.5:14b
-  python pm_agent.py --figma <url> --out ./docs/prds
+  python pm_agent.py
+  python pm_agent.py --model qwen2.5:14b
+  python pm_agent.py --out ./docs/prds
         """,
     )
-    parser.add_argument("--figma", required=True, metavar="URL",
-                        help="Figma design URL with node-id")
     parser.add_argument("--goal", default=None, metavar="TEXT",
                         help="(Optional) Skip problem selection and use this goal directly")
-    parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-                        metavar="MODEL", help="Ollama model (default: qwen2.5:7b)")
+    parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", None),
+                        metavar="MODEL", help="Ollama model (default: auto-detect fastest installed)")
     parser.add_argument("--host", default=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
                         metavar="URL", help="Ollama host (default: http://localhost:11434)")
     parser.add_argument("--out", default="./output", metavar="DIR",
@@ -59,15 +58,50 @@ Examples:
     return parser.parse_args()
 
 
-def check_env() -> tuple[str, str]:
+def prompt_figma_url() -> str:
+    """Prompt user to enter their Figma design URL."""
+    console.print()
+    console.print(Rule("[bold cyan]Step 1 — Figma Design URL[/bold cyan]"))
+    console.print(
+        "\n[dim]Paste the URL of your Figma design (must include node-id for a specific frame).[/dim]\n"
+        "[dim]Example: https://figma.com/design/ABC123/App?node-id=1-2[/dim]\n"
+    )
+    while True:
+        url = Prompt.ask("[bold cyan]Figma URL[/bold cyan]").strip()
+        if url.startswith("http") and "figma.com" in url:
+            return url
+        console.print("[red]Invalid URL — must be a figma.com link. Try again.[/red]")
+
+
+def prompt_figma_token() -> str:
+    """Interactively ask the user for their Figma token and save it to .env."""
+    console.print()
+    console.print(Panel(
+        "[bold yellow]Figma Access Token Required[/bold yellow]\n\n"
+        "1. Go to [cyan]figma.com[/cyan] → [dim]Account Settings → Security[/dim]\n"
+        "2. Click [bold]Generate new token[/bold]\n"
+        "3. Paste it below\n\n"
+        "[dim]Your token will be saved to .env so you only need to do this once.[/dim]",
+        border_style="yellow",
+    ))
+    token = Prompt.ask("\n[bold cyan]Paste your Figma token[/bold cyan]").strip()
+    if not token:
+        console.print("[red]No token entered. Exiting.[/red]")
+        sys.exit(1)
+    env_file = Path(".env")
+    if not env_file.exists():
+        env_file.write_text("", encoding="utf-8")
+    set_key(str(env_file), "FIGMA_ACCESS_TOKEN", token)
+    os.environ["FIGMA_ACCESS_TOKEN"] = token
+    console.print("[green]✓[/green] Token saved to .env\n")
+    return token
+
+
+def get_figma_token() -> str:
     token = os.getenv("FIGMA_ACCESS_TOKEN", "")
     if not token or token == "your_figma_token_here":
-        return "", (
-            "FIGMA_ACCESS_TOKEN is not set.\n"
-            "1. Go to figma.com → Settings → Security → Generate new token\n"
-            "2. Add it to .env: FIGMA_ACCESS_TOKEN=your_token"
-        )
-    return token, ""
+        return prompt_figma_token()
+    return token
 
 
 def show_problem_choices(suggestions) -> str:
@@ -129,24 +163,30 @@ def main():
     args = parse_args()
 
     console.print(Panel(
-        f"[bold cyan]PM Agent[/bold cyan]  —  Figma → PRD\n\n"
-        f"[dim]Figma:[/dim]  {args.figma[:70]}{'...' if len(args.figma) > 70 else ''}\n"
-        f"[dim]Model:[/dim] {args.model}\n"
-        f"[dim]Out:[/dim]   {args.out}",
+        "[bold cyan]PM Agent[/bold cyan]  —  Figma → PRD\n\n"
+        "[dim]Enter your Figma link when prompted and the tool will:[/dim]\n"
+        "  [dim]1.[/dim] Read your design\n"
+        "  [dim]2.[/dim] Suggest 3 problem statements\n"
+        "  [dim]3.[/dim] Generate a full PRD based on your choice",
         border_style="cyan",
     ))
 
-    figma_token, err = check_env()
-    if err:
-        console.print(f"\n[red]Setup required:[/red]\n{err}")
-        sys.exit(1)
+    figma_token = get_figma_token()
+    figma_url = prompt_figma_url()
+
+    console.print()
+    console.print(Panel(
+        f"[dim]Figma:[/dim]  {figma_url[:70]}{'...' if len(figma_url) > 70 else ''}\n"
+        f"[dim]Out:[/dim]   {args.out}",
+        border_style="dim",
+    ))
 
     from connectors.figma_connector import FigmaConnector
     from ollama_client import OllamaClient
     from writers import write_markdown, write_json, write_html
 
     figma = FigmaConnector(figma_token)
-    llm = OllamaClient(host=args.host, model=args.model)
+    llm = OllamaClient(host=args.host, model=args.model or None)
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -167,7 +207,7 @@ def main():
                   console=console, transient=False) as p:
         t = p.add_task("Fetching Figma wireframe...", total=None)
         try:
-            design_ctx = figma.extract_design_context(args.figma)
+            design_ctx = figma.extract_design_context(figma_url)
             design_text = figma.format_for_prompt(design_ctx)
         except Exception as e:
             p.stop()
@@ -181,7 +221,6 @@ def main():
         feature_goal = args.goal
         console.print(f"\n[green]✓[/green] Using provided goal: {feature_goal}\n")
     elif args.fast:
-        # Auto-detect goal from file name — no LLM call needed
         feature_goal = f"Build the core user experience for {design_ctx['file_name']}"
         console.print(f"\n[green]✓[/green] Fast mode — auto goal: [dim]{feature_goal}[/dim]\n")
     else:
@@ -216,9 +255,9 @@ def main():
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   console=console, transient=False) as p:
         t = p.add_task("Writing output files...", total=None)
-        md_path   = write_markdown(prd, output_dir, args.figma)
+        md_path   = write_markdown(prd, output_dir, figma_url)
         json_path = write_json(prd, output_dir)
-        html_path = write_html(prd, output_dir, args.figma)
+        html_path = write_html(prd, output_dir, figma_url)
         p.update(t, description="[green]✓[/green] Files saved")
         p.stop_task(t)
 
