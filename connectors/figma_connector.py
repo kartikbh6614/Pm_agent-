@@ -4,6 +4,7 @@ Handles frames, components, text labels, annotations, flow descriptions
 """
 import re
 import json
+import time
 import hashlib
 from pathlib import Path
 import requests
@@ -60,11 +61,22 @@ class FigmaConnector:
 
     # ─── API Calls ────────────────────────────────────────────────────────────
 
+    def _get(self, url: str, params: dict = None) -> requests.Response:
+        """GET with automatic retry on 429 rate limit."""
+        for attempt in range(5):
+            resp = requests.get(url, headers=self.headers, params=params)
+            if resp.status_code == 429:
+                wait = 2 ** attempt  # 1s, 2s, 4s, 8s, 16s
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp
+        resp.raise_for_status()
+        return resp
+
     def _get_file(self, file_key: str, depth: int = 3) -> dict:
         url = f"{self.BASE_URL}/files/{file_key}"
-        resp = requests.get(url, headers=self.headers, params={"depth": depth})
-        resp.raise_for_status()
-        return resp.json()
+        return self._get(url, params={"depth": depth}).json()
 
     def _get_file_meta(self, file_key: str) -> dict:
         """Lightweight fetch — only top-level metadata (name, lastModified). Much faster."""
@@ -72,17 +84,15 @@ class FigmaConnector:
 
     def _get_nodes(self, file_key: str, node_ids: list[str]) -> dict:
         url = f"{self.BASE_URL}/files/{file_key}/nodes"
-        resp = requests.get(url, headers=self.headers, params={"ids": ",".join(node_ids)})
-        resp.raise_for_status()
-        return resp.json()
+        return self._get(url, params={"ids": ",".join(node_ids)}).json()
 
     def _get_comments(self, file_key: str) -> list[dict]:
         """Fetch design comments/annotations."""
         url = f"{self.BASE_URL}/files/{file_key}/comments"
-        resp = requests.get(url, headers=self.headers)
-        if resp.status_code == 200:
-            return resp.json().get("comments", [])
-        return []
+        try:
+            return self._get(url).json().get("comments", [])
+        except Exception:
+            return []
 
     # ─── Main Entry Point ─────────────────────────────────────────────────────
 
