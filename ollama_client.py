@@ -65,41 +65,13 @@ class ProblemSuggestions(BaseModel):
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-_SYSTEM = """You are an expert Product Manager. Your output must always be
-valid JSON matching the schema exactly. Be specific and actionable."""
+_SYSTEM = "You are a Product Manager. Output valid JSON only. Be concise."
 
-_SUGGEST_TEMPLATE = """You are analyzing a Figma wireframe/design.
-Based on the UI structure below, generate exactly 3 distinct problem statements
-that a Product Manager could use as the foundation for a PRD.
-
-Each should approach the product from a different angle:
-  1. UX angle     — focused on user pain points and experience gaps
-  2. Business angle — focused on business value, retention, or conversion
-  3. Technical angle — focused on scalability, data, or AI/ML opportunity
-
-DESIGN CONTEXT:
+_SUGGEST_TEMPLATE = """Figma design context:
 {design_context}
 
-Return ONLY this JSON, no other text:
-{{
-  "suggestions": [
-    {{
-      "title": "short feature name (3-5 words)",
-      "angle": "UX",
-      "statement": "2-3 sentence problem statement from the UX perspective"
-    }},
-    {{
-      "title": "short feature name (3-5 words)",
-      "angle": "Business",
-      "statement": "2-3 sentence problem statement from the business perspective"
-    }},
-    {{
-      "title": "short feature name (3-5 words)",
-      "angle": "Technical",
-      "statement": "2-3 sentence problem statement from the technical perspective"
-    }}
-  ]
-}}"""
+Return JSON with exactly 3 problem statements (UX, Business, Technical angles):
+{{"suggestions":[{{"title":"3-5 words","angle":"UX","statement":"2 sentences"}},{{"title":"3-5 words","angle":"Business","statement":"2 sentences"}},{{"title":"3-5 words","angle":"Technical","statement":"2 sentences"}}]}}"""
 
 _PRD_TEMPLATE = """You are a leading Product Requirements Document specialist combining advanced product management methodologies, technical architecture expertise, and business strategy.
 
@@ -108,8 +80,7 @@ Using the prd-specialist methodology, generate a comprehensive, detailed PRD tha
 DESIGN CONTEXT:
 {design_context}
 
-CHOSEN PROBLEM STATEMENT:
-{feature_goal}
+Problem: {feature_goal}
 
 Instructions per field:
 - overview: 5-7 sentence executive summary covering background, context, and strategic importance
@@ -176,56 +147,49 @@ Return ONLY this JSON structure, no other text:
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class OllamaClient:
-    # Fast model for quick suggestions, full model for deep PRD generation
-    FAST_MODELS = ["llama3.2:1b", "llama3.2:3b", "qwen2.5:1.5b", "phi3:mini"]
+    # Preferred models ordered fastest → most capable
+    PREFERRED = ["qwen2.5:1.5b", "llama3.2:1b", "llama3.2:3b", "phi3:mini",
+                 "qwen2.5:3b", "qwen2.5:7b", "llama3.2:8b"]
 
-    def __init__(self, host: str = "http://localhost:11434", model: str = "qwen2.5:7b"):
+    def __init__(self, host: str = "http://localhost:11434", model: str | None = None):
         self.client = ollama.Client(host=host)
-        self.model = model
-        self._fast_model: str | None = None  # resolved at runtime
+        self._requested_model = model  # None means auto-detect
+        self.model: str = ""           # resolved in check_connection
 
     def _available_models(self) -> list[str]:
         return [m.model for m in self.client.list().models]
 
-    def _resolve_fast_model(self) -> str:
-        """Pick the fastest available model for the suggestion step."""
-        if self._fast_model:
-            return self._fast_model
-        available = self._available_models()
-        for candidate in self.FAST_MODELS:
+    def _pick_model(self, available: list[str]) -> str:
+        """Return the best model: use requested if available, else fastest installed."""
+        if self._requested_model:
+            if any(self._requested_model in m for m in available):
+                return self._requested_model
+        for candidate in self.PREFERRED:
             if any(candidate in m for m in available):
-                self._fast_model = candidate
                 return candidate
-        # Fall back to the main model if nothing faster is installed
-        self._fast_model = self.model
-        return self.model
+        return available[0]
 
     def check_connection(self) -> tuple[bool, str]:
-        """Returns (is_ready, message)."""
+        """Returns (is_ready, message). Also resolves self.model."""
         try:
             available = self._available_models()
             if not available:
-                return False, "Ollama is running but no models found. Run: ollama pull qwen2.5:7b"
-            if not any(self.model in m for m in available):
-                return False, f"Model '{self.model}' not found. Available: {', '.join(available)}"
-            fast = self._resolve_fast_model()
-            extra = f"  |  fast model: {fast}" if fast != self.model else ""
-            return True, f"Ready ({self.model}{extra})"
+                return False, "No models found. Run: ollama pull qwen2.5:1.5b"
+            self.model = self._pick_model(available)
+            return True, f"Ready — using {self.model}"
         except Exception:
-            return False, "Ollama is not running. Start it from the system tray or run: ollama serve"
+            return False, "Ollama not running. Start it from the system tray or run: ollama serve"
 
     def suggest_problem_statements(self, design_context: str) -> ProblemSuggestions:
-        """Analyse the design and return 3 problem statement options (uses fast model)."""
-        fast = self._resolve_fast_model()
         prompt = _SUGGEST_TEMPLATE.format(design_context=design_context)
         response = self.client.chat(
-            model=fast,
+            model=self.model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.5, "num_predict": 512},
+            options={"temperature": 0.4, "num_predict": 350},
         )
         data = json.loads(response.message.content)
         return ProblemSuggestions(**data)

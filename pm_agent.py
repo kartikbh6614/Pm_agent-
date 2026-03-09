@@ -50,8 +50,8 @@ Examples:
                         help="Figma design URL (will prompt if not provided)")
     parser.add_argument("--goal", default=None, metavar="TEXT",
                         help="(Optional) Skip problem selection and use this goal directly")
-    parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
-                        metavar="MODEL", help="Ollama model (default: qwen2.5:7b)")
+    parser.add_argument("--model", default=os.getenv("OLLAMA_MODEL", None),
+                        metavar="MODEL", help="Ollama model (default: auto-detect fastest installed)")
     parser.add_argument("--host", default=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
                         metavar="URL", help="Ollama host (default: http://localhost:11434)")
     parser.add_argument("--out", default="./output", metavar="DIR",
@@ -185,7 +185,7 @@ def main():
     from writers import write_markdown, write_json, write_html
 
     figma = FigmaConnector(figma_token)
-    llm = OllamaClient(host=args.host, model=args.model)
+    llm = OllamaClient(host=args.host, model=args.model or None)
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
 

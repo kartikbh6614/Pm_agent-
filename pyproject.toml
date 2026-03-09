@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pm-agent"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "ollama==0.4.4",
+    "requests==2.32.3",
+    "pydantic>=2.12.0",
+    "rich==13.9.4",
+    "python-dotenv==1.0.1",
+]
+
+[project.scripts]
+figprd = "pm_agent:main"
+
+[tool.setuptools]
+py-modules = ["pm_agent", "ollama_client", "writers"]
+
+[tool.setuptools.packages.find]
+include = ["connectors*"]

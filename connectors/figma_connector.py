@@ -7,6 +7,7 @@ import json
 import time
 import hashlib
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from typing import Optional
 
@@ -87,7 +88,7 @@ class FigmaConnector:
         return self._get(url, params={"ids": ",".join(node_ids)}).json()
 
     def _get_comments(self, file_key: str) -> list[dict]:
-        """Fetch design comments/annotations."""
+        """Fetch design comments/annotations. Skip on error to avoid slowing down the flow."""
         url = f"{self.BASE_URL}/files/{file_key}/comments"
         try:
             return self._get(url).json().get("comments", [])
@@ -98,11 +99,8 @@ class FigmaConnector:
 
     def extract_design_context(self, figma_url: str) -> dict:
         """
-        Given a Figma URL, return full wireframe context:
-        - File name, last modified
-        - All frames / screens found
-        - UI component tree with text, types, visibility
-        - Designer annotations/comments
+        Given a Figma URL, return full wireframe context.
+        Fast path: fetch only the needed frames, never the whole file tree.
         """
         file_key, node_id = self.parse_url(figma_url)
 
@@ -110,24 +108,38 @@ class FigmaConnector:
         if cached:
             return cached
 
-        comments = self._get_comments(file_key)
-
         if node_id:
-            # Specific frame requested — only fetch lightweight metadata + the node itself
-            meta = self._get_file_meta(file_key)
-            file_name = meta.get("name", "Unknown")
-            last_modified = meta.get("lastModified", "Unknown")
+            # Specific frame: one lightweight nodes call
             nodes_data = self._get_nodes(file_key, [node_id])
+            file_name = nodes_data.get("name", "Unknown")
+            last_modified = nodes_data.get("lastModified", "Unknown")
             node_doc = nodes_data.get("nodes", {}).get(node_id, {}).get("document", {})
             screens = [node_doc] if node_doc else []
             target_name = node_doc.get("name", "Unknown")
         else:
-            # Full file needed — fetch at depth=3 to get all frames
-            file_data = self._get_file(file_key, depth=3)
+            # Full file: depth=1 to get frame IDs (tiny), then fetch frames in parallel
+            file_data = self._get_file(file_key, depth=1)
             file_name = file_data.get("name", "Unknown")
             last_modified = file_data.get("lastModified", "Unknown")
-            document = file_data.get("document", {})
-            screens = self._collect_all_frames(document)
+            frame_ids = self._collect_frame_ids(file_data.get("document", {}))[:6]
+            screens = []
+            if frame_ids:
+                # Split into batches of 2 and fetch in parallel
+                batches = [frame_ids[i:i+2] for i in range(0, len(frame_ids), 2)]
+                results = {}
+                with ThreadPoolExecutor(max_workers=3) as ex:
+                    futures = {ex.submit(self._get_nodes, file_key, b): b for b in batches}
+                    for future in as_completed(futures):
+                        try:
+                            nd = future.result()
+                            results.update(nd.get("nodes", {}))
+                        except Exception:
+                            pass
+                screens = [
+                    results[fid]["document"]
+                    for fid in frame_ids
+                    if fid in results and results[fid].get("document")
+                ]
             target_name = "Full File"
 
         result = {
@@ -137,21 +149,23 @@ class FigmaConnector:
             "node_id": node_id,
             "target_name": target_name,
             "screens": [self._parse_screen(s) for s in screens],
-            "comments": self._parse_comments(comments),
+            "comments": [],
         }
         self._save_cache(file_key, node_id, result)
         return result
 
     # ─── Frame / Screen Extraction ────────────────────────────────────────────
 
-    def _collect_all_frames(self, document: dict) -> list[dict]:
-        """Collect top-level FRAME nodes across all pages."""
-        frames = []
+    def _collect_frame_ids(self, document: dict) -> list[str]:
+        """Collect top-level frame node IDs from a depth=1 document (no children content)."""
+        ids = []
         for page in document.get("children", []):
             for child in page.get("children", []):
                 if child.get("type") in ("FRAME", "COMPONENT", "GROUP"):
-                    frames.append(child)
-        return frames
+                    node_id = child.get("id", "")
+                    if node_id:
+                        ids.append(node_id)
+        return ids
 
     def _parse_screen(self, node: dict) -> dict:
         """Parse a single frame/screen into structured data."""
@@ -303,9 +317,8 @@ class FigmaConnector:
             lines.append("")
 
         result = "\n".join(lines)
-        # Hard cap: keep prompt fast — truncate to 3000 chars
-        if len(result) > 3000:
-            result = result[:3000] + "\n...[truncated for speed]"
+        if len(result) > 1800:
+            result = result[:1800] + "\n...[truncated]"
         return result
 
     def _format_components(self, components: list, indent: int = 0) -> str:
