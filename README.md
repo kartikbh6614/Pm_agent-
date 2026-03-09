@@ -9,7 +9,7 @@ A fully interactive CLI tool that reads a Figma wireframe and generates a compre
 1. **Asks for your Figma token** — only on first run, saved automatically to `.env`
 2. **Asks for your Figma URL** — paste any Figma design URL
 3. **Fetches the Figma wireframe** — connects to Figma REST API, extracts screens, text, components, and interactive elements
-4. **Generates 3 problem statements** — LLM analyses the design and offers 3 angles: UX, Business, Technical
+4. **Generates 7 problem statements** — LLM analyses the design and offers 7 angles: UX, Business, Technical, Growth, Accessibility, Performance, Security
 5. **You pick one** — or skip with `--fast` or provide your own via `--goal`
 6. **Generates a full PRD** — using the prd-specialist methodology: Executive Summary, Product Overview, Functional Requirements, Non-Functional Requirements, Technical Considerations, Story Breakdown
 7. **Saves output** — writes `.md`, `.json`, and `.html` files to `./output/` and auto-opens the HTML in your browser
@@ -192,8 +192,8 @@ The tool will interactively ask for:
 Then it will automatically:
 - Connect to Ollama
 - Fetch the Figma wireframe
-- Generate 3 problem statements
-- Let you pick one
+- Generate 7 problem statements (UX, Business, Technical, Growth, Accessibility, Performance, Security)
+- Let you pick one (1–7)
 - Generate the full PRD
 - Save and open the output
 
