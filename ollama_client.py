@@ -70,44 +70,23 @@ _SYSTEM = "You are a Product Manager. Output valid JSON only. Be concise."
 _SUGGEST_TEMPLATE = """Figma design context:
 {design_context}
 
-Return JSON with exactly 3 problem statements (UX, Business, Technical angles):
-{{"suggestions":[{{"title":"3-5 words","angle":"UX","statement":"2 sentences"}},{{"title":"3-5 words","angle":"Business","statement":"2 sentences"}},{{"title":"3-5 words","angle":"Technical","statement":"2 sentences"}}]}}"""
+Return JSON with exactly 7 problem statements covering these angles: UX, Business, Technical, Growth, Accessibility, Performance, Security.
+{{"suggestions":[
+  {{"title":"3-5 words","angle":"UX","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Business","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Technical","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Growth","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Accessibility","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Performance","statement":"2 sentences"}},
+  {{"title":"3-5 words","angle":"Security","statement":"2 sentences"}}
+]}}"""
 
-_PRD_TEMPLATE = """You are a leading Product Requirements Document specialist combining advanced product management methodologies, technical architecture expertise, and business strategy.
+_PRD_TEMPLATE = """Generate a detailed PRD as JSON. Be specific and thorough in every field.
 
-Using the prd-specialist methodology, generate a comprehensive, detailed PRD that covers all sections thoroughly — this must be a professional document of at least 3 pages.
+DESIGN: {design_context}
+PROBLEM: {feature_goal}
 
-DESIGN CONTEXT:
-{design_context}
-
-Problem: {feature_goal}
-
-Instructions per field:
-- overview: 5-7 sentence executive summary covering background, context, and strategic importance
-- problem_statement: 3-4 sentences on user pain point and business impact
-- business_impact: quantified business value, ROI model, and alignment with OKRs (3-4 sentences)
-- resource_requirements: teams, tools, timeline estimates needed (2-3 sentences)
-- risk_assessment: top risks and mitigation strategies (3-4 sentences)
-- product_vision: inspiring 1-2 sentence vision statement
-- target_users: at least 3 detailed user personas with Jobs-to-Be-Done
-- value_proposition: clear differentiated value for each persona (2-3 sentences)
-- success_criteria: at least 5 measurable KPIs with target values
-- assumptions: at least 4 assumptions the PRD is built on
-- goals: at least 6 specific measurable goals using RICE scoring context
-- user_stories: at least 8 stories covering different personas — "As a [persona], I want [feature], so that [value]"
-- business_rules: at least 4 business logic rules the feature must follow
-- integration_points: at least 3 system integrations or API dependencies
-- performance_requirements: at least 3 non-functional performance requirements
-- security_requirements: at least 3 security and compliance requirements
-- compliance_requirements: at least 2 regulatory or legal requirements
-- technical_considerations: at least 4 architecture or technical constraints
-- acceptance_criteria: at least 10 Given/When/Then criteria covering happy paths and edge cases
-- edge_cases: at least 8 edge cases with handling strategy
-- out_of_scope: at least 5 items with reasons for exclusion
-- open_questions: at least 6 questions with context on why each matters
-- structured_stories: at least 6 detailed stories with per-story acceptance criteria
-
-Return ONLY this JSON structure, no other text:
+Return ONLY this JSON:
 {{
   "feature_name": "short slug name",
   "overview": "...",
@@ -147,14 +126,18 @@ Return ONLY this JSON structure, no other text:
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class OllamaClient:
-    # Preferred models ordered fastest → most capable
+    # Preferred models for full PRD generation ordered fastest → most capable
     PREFERRED = ["qwen2.5:1.5b", "llama3.2:1b", "llama3.2:3b", "phi3:mini",
                  "qwen2.5:3b", "qwen2.5:7b", "llama3.2:8b"]
+
+    # Fast small models preferred for quick suggestion step
+    FAST_MODELS = ["qwen2.5:1.5b", "llama3.2:1b", "llama3.2:3b", "phi3:mini", "qwen2.5:3b"]
 
     def __init__(self, host: str = "http://localhost:11434", model: str | None = None):
         self.client = ollama.Client(host=host)
         self._requested_model = model  # None means auto-detect
         self.model: str = ""           # resolved in check_connection
+        self._fast_model: str = ""     # resolved in check_connection
 
     def _available_models(self) -> list[str]:
         return [m.model for m in self.client.list().models]
@@ -169,47 +152,68 @@ class OllamaClient:
                 return candidate
         return available[0]
 
+    def _resolve_fast_model(self) -> str:
+        """Return fastest available model for the suggestion step."""
+        return self._fast_model or self.model
+
     def check_connection(self) -> tuple[bool, str]:
-        """Returns (is_ready, message). Also resolves self.model."""
+        """Returns (is_ready, message). Also resolves self.model and self._fast_model."""
         try:
             available = self._available_models()
             if not available:
-                return False, "No models found. Run: ollama pull qwen2.5:1.5b"
+                return False, "No models found. Run: ollama pull qwen2.5:7b"
             self.model = self._pick_model(available)
-            return True, f"Ready — using {self.model}"
+            for candidate in self.FAST_MODELS:
+                if any(candidate in m for m in available):
+                    self._fast_model = candidate
+                    break
+            if not self._fast_model:
+                self._fast_model = self.model
+            extra = f"  |  fast: {self._fast_model}" if self._fast_model != self.model else ""
+            return True, f"Ready — using {self.model}{extra}"
         except Exception:
             return False, "Ollama not running. Start it from the system tray or run: ollama serve"
 
     def suggest_problem_statements(self, design_context: str) -> ProblemSuggestions:
         prompt = _SUGGEST_TEMPLATE.format(design_context=design_context)
+        fast = self._resolve_fast_model()
         response = self.client.chat(
-            model=self.model,
+            model=fast,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.4, "num_predict": 350},
+            options={"temperature": 0.4, "num_predict": 900},
         )
         data = json.loads(response.message.content)
         return ProblemSuggestions(**data)
 
-    def generate_prd(self, design_context: str, feature_goal: str) -> PRD:
-        """Generate a full PRD given design context and a chosen problem statement."""
+    def generate_prd(self, design_context: str, feature_goal: str, on_token=None) -> PRD:
+        """Generate a full PRD. Streams tokens and calls on_token(count) for progress updates."""
         prompt = _PRD_TEMPLATE.format(
             design_context=design_context,
             feature_goal=feature_goal,
         )
-        response = self.client.chat(
+        chunks = []
+        token_count = 0
+        for chunk in self.client.chat(
             model=self.model,
             messages=[
                 {"role": "system", "content": _SYSTEM},
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.3, "num_predict": 8000},
-        )
-        data = json.loads(response.message.content)
+            options={"temperature": 0.3, "num_predict": 2500},
+            stream=True,
+        ):
+            token = chunk.message.content
+            chunks.append(token)
+            token_count += 1
+            if on_token and token_count % 50 == 0:
+                on_token(token_count)
+
+        data = json.loads("".join(chunks))
         data["structured_stories"] = [
             UserStory(**s) for s in data.get("structured_stories", [])
         ]

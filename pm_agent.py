@@ -106,7 +106,15 @@ def prompt_for_figma_url() -> str:
 
 def show_problem_choices(suggestions) -> str:
     """Display 3 problem statement options and return the chosen statement text."""
-    angle_colors = {"UX": "magenta", "Business": "green", "Technical": "blue"}
+    angle_colors = {
+        "UX": "magenta",
+        "Business": "green",
+        "Technical": "blue",
+        "Growth": "yellow",
+        "Accessibility": "cyan",
+        "Performance": "red",
+        "Security": "bright_red",
+    }
 
     console.print()
     console.print(Rule("[bold yellow]Choose a Problem Statement[/bold yellow]"))
@@ -124,7 +132,7 @@ def show_problem_choices(suggestions) -> str:
 
     choice = Prompt.ask(
         "[bold cyan]Pick one[/bold cyan]",
-        choices=["1", "2", "3"],
+        choices=["1", "2", "3", "4", "5", "6", "7"],
         default="1",
     )
     selected = suggestions.suggestions[int(choice) - 1]
@@ -240,9 +248,13 @@ def main():
     # ── Step 4: Generate full PRD ─────────────────────────────────────────────
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   console=console, transient=False) as p:
-        t = p.add_task(f"Generating PRD with {args.model}...", total=None)
+        t = p.add_task("Generating PRD... (0 tokens)", total=None)
+
+        def on_token(count):
+            p.update(t, description=f"Generating PRD... ({count} tokens written)")
+
         try:
-            prd = llm.generate_prd(design_context=design_text, feature_goal=feature_goal)
+            prd = llm.generate_prd(design_context=design_text, feature_goal=feature_goal, on_token=on_token)
         except Exception as e:
             p.stop()
             console.print(f"\n[red]LLM error:[/red] {e}")
