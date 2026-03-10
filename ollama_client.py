@@ -2,6 +2,7 @@
 Ollama Client - handles LLM calls with structured JSON output
 """
 import json
+import re
 import ollama
 from pydantic import BaseModel
 
@@ -65,62 +66,95 @@ class ProblemSuggestions(BaseModel):
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-_SYSTEM = "You are a Product Manager. Output valid JSON only. Be concise."
+_SYSTEM = "You are a Product Manager. Output valid JSON only. No extra text before or after the JSON."
 
 _SUGGEST_TEMPLATE = """Figma design context:
 {design_context}
 
-Return JSON with exactly 7 problem statements covering these angles: UX, Business, Technical, Growth, Accessibility, Performance, Security.
+Return JSON with exactly 3 problem statements. Each statement is 1 sentence max.
 {{"suggestions":[
-  {{"title":"3-5 words","angle":"UX","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Business","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Technical","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Growth","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Accessibility","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Performance","statement":"2 sentences"}},
-  {{"title":"3-5 words","angle":"Security","statement":"2 sentences"}}
+  {{"title":"3-5 words","angle":"UX","statement":"1 sentence"}},
+  {{"title":"3-5 words","angle":"Business","statement":"1 sentence"}},
+  {{"title":"3-5 words","angle":"Technical","statement":"1 sentence"}}
 ]}}"""
 
-_PRD_TEMPLATE = """Generate a detailed PRD as JSON. Be specific and thorough in every field.
+_PRD_TEMPLATE = """Generate a PRD as JSON. Be specific and concise.
 
 DESIGN: {design_context}
 PROBLEM: {feature_goal}
 
-Return ONLY this JSON:
+Return ONLY valid JSON, nothing else:
 {{
   "feature_name": "short slug name",
-  "overview": "...",
-  "problem_statement": "...",
-  "business_impact": "...",
-  "resource_requirements": "...",
-  "risk_assessment": "...",
-  "product_vision": "...",
-  "target_users": ["Persona 1: description and JTBD", "Persona 2: ...", "Persona 3: ..."],
-  "value_proposition": "...",
+  "overview": "2-3 sentence overview",
+  "problem_statement": "1-2 sentences",
+  "business_impact": "1-2 sentences",
+  "resource_requirements": "1 sentence",
+  "risk_assessment": "1-2 sentences",
+  "product_vision": "1 sentence",
+  "target_users": ["Persona 1: role and need", "Persona 2: role and need"],
+  "value_proposition": "1-2 sentences",
   "success_criteria": ["KPI 1 with target", "KPI 2 with target"],
   "assumptions": ["assumption 1", "assumption 2"],
-  "goals": ["goal 1", "goal 2", "goal 3", "goal 4", "goal 5", "goal 6"],
-  "user_stories": ["As a ..., I want ..., so that ..."],
-  "business_rules": ["rule 1", "rule 2", "rule 3", "rule 4"],
-  "integration_points": ["integration 1", "integration 2", "integration 3"],
-  "performance_requirements": ["requirement 1", "requirement 2", "requirement 3"],
-  "security_requirements": ["requirement 1", "requirement 2", "requirement 3"],
-  "compliance_requirements": ["requirement 1", "requirement 2"],
-  "technical_considerations": ["consideration 1", "consideration 2", "consideration 3", "consideration 4"],
-  "acceptance_criteria": ["Given ..., When ..., Then ..."],
-  "edge_cases": ["edge case and handling strategy"],
-  "out_of_scope": ["item and reason"],
-  "open_questions": ["question and why it matters?"],
+  "goals": ["goal 1", "goal 2", "goal 3", "goal 4"],
+  "user_stories": ["As a ..., I want ..., so that ...", "As a ..., I want ..., so that ..."],
+  "business_rules": ["rule 1", "rule 2", "rule 3"],
+  "integration_points": ["integration 1", "integration 2"],
+  "performance_requirements": ["requirement 1", "requirement 2"],
+  "security_requirements": ["requirement 1", "requirement 2"],
+  "compliance_requirements": ["requirement 1"],
+  "technical_considerations": ["consideration 1", "consideration 2", "consideration 3"],
+  "acceptance_criteria": ["Given ..., When ..., Then ...", "Given ..., When ..., Then ..."],
+  "edge_cases": ["edge case 1 and handling", "edge case 2 and handling"],
+  "out_of_scope": ["item 1 and reason", "item 2 and reason"],
+  "open_questions": ["question 1?", "question 2?"],
   "structured_stories": [
     {{
       "title": "story title",
-      "description": "full user story with workflow steps and expected outcome",
+      "description": "user story with expected outcome",
       "acceptance_criteria": ["Given ..., When ..., Then ..."],
       "priority": "High",
       "effort": "M"
+    }},
+    {{
+      "title": "story title",
+      "description": "user story with expected outcome",
+      "acceptance_criteria": ["Given ..., When ..., Then ..."],
+      "priority": "Medium",
+      "effort": "S"
+    }},
+    {{
+      "title": "story title",
+      "description": "user story with expected outcome",
+      "acceptance_criteria": ["Given ..., When ..., Then ..."],
+      "priority": "Low",
+      "effort": "L"
     }}
   ]
 }}"""
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_json(text: str) -> dict:
+    """Parse JSON from model output that may contain trailing text or prose."""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Strip markdown fences
+    text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*```$', '', text)
+    try:
+        return json.loads(text.strip())
+    except json.JSONDecodeError:
+        pass
+    # Find outermost { ... } block
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        return json.loads(match.group())
+    raise ValueError(f"No valid JSON found in model response (first 200 chars): {text[:200]}")
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -184,9 +218,9 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.4, "num_predict": 900},
+            options={"temperature": 0.3, "num_predict": 350},
         )
-        data = json.loads(response.message.content)
+        data = _extract_json(response.message.content)
         return ProblemSuggestions(**data)
 
     def generate_prd(self, design_context: str, feature_goal: str, on_token=None) -> PRD:
@@ -204,7 +238,7 @@ class OllamaClient:
                 {"role": "user", "content": prompt},
             ],
             format="json",
-            options={"temperature": 0.3, "num_predict": 2500},
+            options={"temperature": 0.2, "num_predict": 3500},
             stream=True,
         ):
             token = chunk.message.content
@@ -213,7 +247,8 @@ class OllamaClient:
             if on_token and token_count % 50 == 0:
                 on_token(token_count)
 
-        data = json.loads("".join(chunks))
+        raw = "".join(chunks)
+        data = _extract_json(raw)
         data["structured_stories"] = [
             UserStory(**s) for s in data.get("structured_stories", [])
         ]
